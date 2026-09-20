@@ -409,3 +409,32 @@ def test_the_fallback_actually_performs_the_second_action(screen, monkeypatch):
     instead = SimpleNamespace(choice="use_browser", confidence=0.95, probabilities={})
     result = actions.perform(dc_replace(decision, kind=instead), screen, [], ctx)
     assert "notion" in result.lower()
+
+
+def test_typing_into_a_terminal_is_refused(screen, monkeypatch):
+    """A fallback once composed `open -a Notion` into a terminal and the next step
+    submitted it. Typing there runs commands; it is not a form to fill."""
+    from dataclasses import replace as dc_replace
+
+    from typesafe_computer_use.models import Field
+
+    monkeypatch.setattr(actions, "compose_text", lambda *a: pytest.fail("must not reach the writer"))
+    field = Field(role="AXTextArea", label="Terminal 1, shell", placeholder="", value="", x=10, y=20, w=200, h=30, ref=None)
+    live = dc_replace(screen, field=field, app="Cursor")
+    refusal = actions.perform(SimpleNamespace(chosen="type_text"), live, [], context(writer=object()))
+    assert "terminal" in refusal
+    assert actions.is_noop(refusal)
+
+
+def test_typing_into_an_ordinary_field_still_works(screen, monkeypatch):
+    from dataclasses import replace as dc_replace
+
+    from typesafe_computer_use.models import Field
+
+    monkeypatch.setattr(actions, "compose_text", lambda *a: "alan turing")
+    monkeypatch.setattr(actions, "fill_field", lambda f, t: "via accessibility")
+    monkeypatch.setattr(actions, "verify_typed", lambda *a: 0.9)
+    field = Field(role="AXTextField", label="Search", placeholder="", value="", x=10, y=20, w=200, h=30, ref=None)
+    live = dc_replace(screen, field=field, app="Google Chrome")
+    result = actions.perform(SimpleNamespace(chosen="type_text"), live, [], context(writer=object()))
+    assert "alan turing" in result

@@ -181,9 +181,25 @@ def _type_email(decision, screen: Screen, items, ctx: Context) -> str:
     return f"typed email {how}"
 
 
+# Typing here means a command gets run, not a form gets filled. A refused action costs
+# a step; a composed shell command costs whatever it does.
+TERMINALS = ("terminal", "iterm", "warp", "alacritty", "kitty", "console", "shell")
+
+
+def _is_terminal(screen: Screen) -> bool:
+    app = (screen.app or "").lower()
+    if any(t in app for t in TERMINALS):
+        return True
+    field = screen.field
+    label = f"{field.label} {field.placeholder}".lower() if field else ""
+    return any(t in label for t in TERMINALS)
+
+
 def _type_text(decision, screen: Screen, items, ctx: Context) -> str:
     if not (screen.field and screen.field.is_text):
         return "type_text refused: no text field is focused"
+    if _is_terminal(screen):
+        return "type_text refused: the focused field is a terminal, where typing runs commands"
     if ctx.writer is None:
         return "type_text refused: no writer available"
     text = compose_text(ctx.writer, ctx.goal, screen, items, ctx.history)

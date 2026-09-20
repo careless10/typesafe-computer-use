@@ -98,7 +98,10 @@ def compose_text(writer: anthropic.Anthropic, goal: str, screen: Screen, items: 
             "You fill in one text field on a user's screen. You receive the user's goal, recent "
             "actions, the focused field's label and placeholder, and nearby screen text. Decide the "
             "exact string to type. Never invent credentials, passwords, or personal data; for such "
-            "fields, or when the field should not be filled, set fill to false."
+            "fields, or when the field should not be filled, set fill to false. Never write a "
+            "shell command, a script, or anything whose purpose is to be executed rather than "
+            "read — if the field belongs to a terminal, a console or an editor's command line, "
+            "set fill to false."
         ),
         packet=packet,
         properties={"fill": {"type": "boolean"}, "text": {"type": "string"}, "reason": {"type": "string"}},

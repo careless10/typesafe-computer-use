@@ -265,18 +265,29 @@ def resolve(
     return True
 
 
-def runner_up(decision: Decision) -> str:
-    """The next action the model would have taken.
+# What a refused action may fall back to. Deliberately tiny, and deliberately does not
+# include anything that writes: a fallback ran once with "open notion", chose type_text,
+# and the writer — seeing a terminal in front of it — composed `open -a Notion`, which
+# the next step submitted. A recovery must never be able to author a command.
+SAFE_FALLBACKS = ("use_browser", "click_item", "scroll_down", "scroll_up")
 
-    No probability floor: this is only reached when the first choice turned out to be
-    impossible — an action whose parameter question named nothing — and in that case any
-    real alternative beats repeating something that cannot work. A confident wrong plan
-    leaves its alternatives with very little probability, which is exactly when a floor
-    would block the recovery.
+
+def runner_up(decision: Decision) -> str:
+    """A safe alternative when the chosen action turned out to be impossible.
+
+    Only reached when an action's parameter question named nothing, which is an
+    internally inconsistent plan rather than a misread screen. There is no probability
+    floor — a confident wrong plan leaves its alternatives almost nothing, which is
+    exactly when recovery is needed — but the alternative must be one that cannot type,
+    press keys, quit an app or submit a form.
     """
+    if decision.kind.choice == "open_app" and getattr(decision, "site", None) is not None:
+        site = getattr(decision.site, "choice", "none")
+        if site not in ("none", "other"):
+            return "use_browser"  # it named where to go; go there in the browser
     ranked = sorted(decision.kind.probabilities.items(), key=lambda kv: kv[1], reverse=True)
     for name, _probability in ranked[1:]:
-        if name not in ("none", "done", "wait", decision.kind.choice):
+        if name in SAFE_FALLBACKS and name != decision.kind.choice:
             return name
     return ""
 

@@ -16,6 +16,9 @@ STOP_KINDS = ("done", "none")
 OFFSCREEN_PREFIX = "offscreen:"
 LOGGER = logging.getLogger(__name__)
 
+# The token count of the most recent decision, for the step log.
+LAST_USAGE: dict[str, int] = {"input_tokens": 0}
+
 PRESS_OFFSCREEN = (
     "Activate a labelled control that the app exposes but that is not currently visible on screen "
     "(chosen in the offscreen question). Use when the needed control is known to exist but is "
@@ -291,7 +294,12 @@ def decide(
             ),
             criteria=offscreen_criteria(screen.offscreen),
         )
-    answers = client.system_one(state=base_state(goal, screen, items, history, note), questions=questions).answers
+    response = client.system_one(state=base_state(goal, screen, items, history, note), questions=questions)
+    answers = response.answers
+    # Input tokens are the whole cost signal (output is free) and the whole size signal:
+    # whether a decision would fit a smaller local model is a question about this number.
+    usage = getattr(response, "usage", None)
+    LAST_USAGE["input_tokens"] = getattr(usage, "input_tokens", 0) if usage else 0
 
     # Every answer is checked against the options that were actually offered, so an
     # answer naming something that does not exist becomes a no-op rather than a click

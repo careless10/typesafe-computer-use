@@ -16,6 +16,7 @@ from . import config as cfg_module
 from . import learning, macos
 from .actions import Context, is_noop, perform
 from .config import DEFAULT_DELAY, DEFAULT_MIN_CONFIDENCE, DEFAULT_STEPS, MAX_OPTIONS
+from .decide import LAST_USAGE as decide_usage
 from .decide import Decision, decide, offscreen_records
 from .models import Abort, Item, Screen
 from .perception import OcrCache, capture, perceive
@@ -173,6 +174,7 @@ def run_step(cfg: RunConfig, ctx: Context, state: RunState, step: int, log: Log)
 
     with phase(timing, "decide"):
         decision = decide(ctx.typesafe, cfg.goal, screen, items, state.history, ctx.browser, ctx.email, cfg.note)
+    tokens = decide_usage["input_tokens"]
     by_index = {str(it.index): it for it in items}
     annotate(screen, items, decision.chosen, prefix.with_suffix(".png"))
 
@@ -200,7 +202,7 @@ def run_step(cfg: RunConfig, ctx: Context, state: RunState, step: int, log: Log)
 
     prefix.with_name(prefix.name + "-answers.json").write_text(json.dumps(answers(decision, screen, items, timing), indent=2))
     log(f"  files: {prefix.name}-raw.png, {prefix.name}.png, {prefix.name}-payload.txt, {prefix.name}-answers.json")
-    log(format_timing(timing))
+    log(format_timing(timing) + (f"  tokens {tokens}" if tokens else ""))
 
     if state.view is None:  # an action ran: let the screen settle before the next step, or the answer, reads it
         macos.sleep_watching(cfg.delay)

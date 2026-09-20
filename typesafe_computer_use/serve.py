@@ -28,6 +28,7 @@ from pathlib import Path
 from typesafe_sdk import TypeSafeClient
 
 from . import config, macos
+from . import investigate as investigation
 from .actions import Context
 from .cli import _prepare
 from .perception import OcrCache
@@ -59,6 +60,9 @@ def serve() -> int:
                 request = json.loads(line)
             except json.JSONDecodeError:
                 print(json.dumps({"error": "not json"}), flush=True)
+                continue
+            if request.get("kind") == "investigate":
+                print(json.dumps(_investigate(request, writer, client)), flush=True)
                 continue
             goal = str(request.get("goal", "")).strip()
             if not goal:
@@ -104,6 +108,51 @@ def serve() -> int:
                 result = {"outcome": f"crashed ({exc})", "seconds": round(time.time() - started, 2)}
             print(json.dumps(result), flush=True)
     return 0
+
+
+def _investigate(request: dict, writer, client) -> dict:
+    """Work out what should have happened, remember it, and optionally do it."""
+    from .actions import Context
+    from .decide import Decision
+    from .perception import capture, perceive
+    from .runner import perform
+
+    goal = str(request.get("goal", "")).strip()
+    did = str(request.get("did", ""))
+    browser = config.browser()
+    screen = capture(browser=browser)
+    items = perceive(screen, config.MAX_OPTIONS, goal, {})
+    verdict, learned = investigation.investigate(writer, goal, did, screen, items)
+
+    result = {"action": verdict.action, "target": verdict.target, "why": verdict.why, "learned": learned}
+    if not (verdict.action and request.get("act")):
+        return result
+
+    # Carry it out through the ordinary action path, so the same refusals apply.
+    from types import SimpleNamespace
+
+    kind = verdict.action.split()[0].strip("(,")
+    stand_in = SimpleNamespace(choice=kind, confidence=1.0, probabilities={kind: 1.0})
+    named = SimpleNamespace(choice=verdict.target, confidence=1.0, probabilities={})
+    decision = Decision(
+        kind=stand_in,
+        item=named if kind == "click_item" else None,
+        site=named if kind == "use_browser" else SimpleNamespace(choice="none", confidence=1.0, probabilities={}),
+        app=named if kind in ("open_app", "quit_app", "hide_app") else None,
+    )
+    ctx = Context(
+        goal=goal,
+        browser=browser,
+        email=config.email(),
+        typesafe=client,
+        writer=writer,
+        history=[],
+    )
+    try:
+        result["did"] = perform(decision, screen, items, ctx)
+    except Exception as exc:
+        result["did"] = f"could not carry it out ({exc})"
+    return result
 
 
 def main() -> int:

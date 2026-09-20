@@ -476,3 +476,22 @@ def test_being_told_it_was_wrong_unlearns_the_phrase(monkeypatch, tmp_path):
     assert "example.com/widgets" not in learning.load()
     assert "youtube.com" in learning.load()  # untouched
     assert "was wrong" in learning.recent_mistakes()[0]
+
+
+def test_an_investigation_teaches_a_site_but_not_a_click(monkeypatch, tmp_path):
+    """A site learned in the words that were said is useful tomorrow. "click item 47"
+    is not: the screen will have moved on."""
+    from typesafe_computer_use import investigate, learning, sites
+
+    monkeypatch.setattr(learning, "LEARNED", tmp_path / "learned.json")
+    monkeypatch.setattr(sites, "targets", lambda b: {"tech tracker": ("https://app.notion.com/p/x", "the tracker")})
+
+    site = investigate.Verdict(action="use_browser", target="tech tracker", why="…")
+    assert "learned" in investigate.teach("open the tracker", site, "Google Chrome")
+    assert any("tech tracker" in e.get("title", "") for e in learning.load().values())
+
+    click = investigate.Verdict(action="click_item", target="47", why="…")
+    assert investigate.teach("open the tracker", click, "Google Chrome") == ""
+
+    nothing = investigate.Verdict(action="", target="", why="the right move is not available")
+    assert investigate.teach("open the tracker", nothing, "Google Chrome") == ""

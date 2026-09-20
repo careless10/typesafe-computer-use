@@ -44,8 +44,8 @@ def capture(
     record the seconds each one costs under "screenshot", "app", "window", "field", and "url".
     """
     replay = image_path is not None and app is not None
-    with phase(timing, "screenshot"):
-        image = Image.open(image_path).convert("RGB") if image_path else macos.screenshot()
+    # Which app and window first: the window decides which display to photograph.
+    # Capturing only display 1 is why a window on a second monitor was invisible.
     with phase(timing, "app"):
         if replay:
             frontmost, pid = app, None
@@ -54,11 +54,28 @@ def capture(
             frontmost = app or frontmost
     with phase(timing, "window"):
         window = None if replay else macos.frontmost_window_bounds(pid)
+    if replay:
+        number, bounds = 1, None
+    else:
+        centre = (window[0] + window[2] / 2, window[1] + window[3] / 2) if window else None
+        number, bounds = macos.display_holding(centre)
+    with phase(timing, "screenshot"):
+        image = Image.open(image_path).convert("RGB") if image_path else macos.screenshot(number)
     with phase(timing, "field"):
         field = None if replay else macos.focused_field()
     with phase(timing, "url"):
         page_url = url if url is not None else (None if replay else macos.browser_url(browser))
-    return Screen(image=image, scale=macos.display_scale(image), app=frontmost, field=field, url=page_url, pid=pid, window=window)
+    origin = (bounds[0], bounds[1]) if bounds else (0.0, 0.0)
+    return Screen(
+        image=image,
+        scale=macos.display_scale(image, bounds),
+        app=frontmost,
+        field=field,
+        url=page_url,
+        pid=pid,
+        window=window,
+        origin=origin,
+    )
 
 
 def goal_echoes(goal: str) -> set[str]:
@@ -216,6 +233,8 @@ def ocr_region(screen: Screen) -> Box:
     if screen.window is None:
         return (0.0, 0.0, width, height)
     x, y, w, h = screen.window
+    # Window bounds are global; the image starts at the display's origin.
+    x, y = x - screen.origin[0], y - screen.origin[1]
     scale, margin = screen.scale, REGION_MARGIN_PT
     window = ((x - margin) * scale, (y - margin) * scale, (x + w + margin) * scale, (y + h + margin) * scale)
     joined = (window[0], min(window[1], 0.0), window[2], max(window[3], MENU_BAR_PT * scale))

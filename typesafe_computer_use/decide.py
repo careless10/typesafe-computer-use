@@ -2,16 +2,20 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 
 from typesafe_sdk import Choice, ChoiceAnswer, Noul, TypeSafeClient
 
+from . import macos, sites
 from .config import SITES
 from .dates import date_hints, now_context
 from .models import AxNode, Field, Item, Screen
 
 STOP_KINDS = ("done", "none")
 OFFSCREEN_PREFIX = "offscreen:"
+LOGGER = logging.getLogger(__name__)
+
 PRESS_OFFSCREEN = (
     "Activate a labelled control that the app exposes but that is not currently visible on screen "
     "(chosen in the offscreen question). Use when the needed control is known to exist but is "
@@ -30,9 +34,41 @@ def fixed_actions(browser: str, email: str | None) -> dict[str, str]:
         ),
         "type_text": (
             "Type free text into the focused text field. A writing model composes the text from the "
-            "goal and the field's label. Only valid when a text field is focused and needs content."
+            "goal and the field's label. Only valid when a text field is focused and needs content. "
+            "Never use it to type a web address into the browser's address bar: use_browser goes to "
+            "a site in one step, and typing an address then needs a separate Return, which is where "
+            "runs get stuck repeating themselves."
         ),
-        "press_enter": "Press Return to submit the focused form or field.",
+        "open_app": (
+            "Switch to another application, launching it if it is not running (which one is "
+            "chosen in the app question). Use this when the goal names an app that is not the "
+            "one in front, rather than trying to reach it through the browser."
+        ),
+        "close_tab": f"Close the tab showing in {browser} right now.",
+        "open_ticket": (
+            "Open a ticket in the Notion Tech Tracker by its number, when the goal names one "
+            '("ticket 615", "RUB-641"). The whole route is performed in one step, so do not '
+            "try to search Notion by clicking or typing: choose this instead."
+        ),
+        "press_keys": (
+            "Press a keyboard shortcut (which one is chosen in the keys question). Keyboard "
+            "shortcuts reach things a click cannot: closing a tab, reopening one, focusing the "
+            "address bar, going back. Prefer this over hunting for a small target on screen."
+        ),
+        "quit_app": (
+            "Quit an application entirely (which one is chosen in the app question). This is what "
+            "'close <app>' means when the thing named is an application rather than a browser tab. "
+            "Never use open_app for that: opening is the opposite of what was asked."
+        ),
+        "hide_app": (
+            "Put an application out of the way without quitting it (chosen in the app question). "
+            "Use this when the goal is to get something off the screen rather than to end it."
+        ),
+        "press_enter": (
+            "Press Return to submit the focused form or field. Use it when text has already been "
+            "typed and the screen has not moved on; do not click an autocomplete suggestion instead, "
+            "as its position shifts as the list redraws."
+        ),
         "press_escape": "Press Escape to dismiss a dialog, menu, or popup.",
         "scroll_down": "Scroll down to reveal more of the page.",
         "scroll_up": "Scroll up.",
@@ -55,16 +91,30 @@ def kind_criteria(browser: str, email: str | None, offscreen: bool = False) -> d
     return {**clicks, **fixed_actions(browser, email)}
 
 
-def item_criteria(screen: Screen, items: list[Item]) -> dict[str, str]:
-    """Each item as one line. A role prefix marks the ones the app itself declared."""
+def item_criteria(screen: Screen, items: list[Item]) -> dict[str, dict | str]:
+    """Each item as an object rather than a sentence.
+
+    A Choice matches on what its options say about themselves, so the fields here are
+    the ones that change the answer: whether the app declared the control or it is only
+    text read off the screen, and whether it is the field that already has the focus and
+    a value — without which a run will happily retype what is already there.
+    """
     hints = date_hints(items, screen)
-    return {
-        str(it.index): (
-            f"{it.role + ' ' if it.from_ax and it.role else ''}{it.text!r} "
-            f"({screen.region(it)}{'; ' + hints[it.index] if it.index in hints else ''})"
-        )
-        for it in items
-    }
+    focused = screen.field.label if screen.field else None
+    criteria: dict[str, dict | str] = {}
+    for it in items:
+        option: dict[str, object] = {"element": it.text, "where": screen.region(it)}
+        if it.from_ax and it.role:
+            option["role"] = it.role
+        option["declared_by_app"] = it.from_ax  # OCR-only text may not be a control at all
+        if it.index in hints:
+            option["when"] = hints[it.index]
+        if focused and it.text.strip() and it.text.strip() == focused.strip():
+            option["focused"] = True
+            if screen.field and screen.field.value:
+                option["current_value"] = screen.field.value[:80]
+        criteria[str(it.index)] = option
+    return criteria
 
 
 def offscreen_criteria(nodes: list[AxNode]) -> dict[str, str]:
@@ -77,8 +127,21 @@ def offscreen_records(nodes: list[AxNode]) -> list[dict]:
     return [{"k": i, "role": node.role_word, "label": node.label} for i, node in enumerate(nodes)]
 
 
-def site_criteria() -> dict[str, str]:
-    """Which website use_browser opens. The catalog, plus one key for anything else and one for nothing."""
+def app_criteria(apps: list[str]) -> dict[str, str]:
+    """Which app open_app switches to. Running apps first, then everything installed."""
+    criteria = {name: f"The {name} application" for name in apps}
+    criteria["none"] = "Stay in the application that is already in front."
+    return criteria
+
+
+def site_criteria(targets: dict[str, tuple[str, str]] | None = None) -> dict[str, str]:
+    """Which website use_browser opens: the open tabs and frequently visited sites,
+    plus one key for anything else and one for nothing."""
+    if targets:
+        criteria = {host: why for host, (_url, why) in targets.items()}
+        criteria["other"] = "A site the list above does not name; a writing model proposes the URL."
+        criteria["none"] = "Stay on the page already open in the browser."
+        return criteria
     return {
         **SITES,
         "other": "A website is needed to progress the goal, but it is not one of the sites named in this list.",
@@ -86,10 +149,11 @@ def site_criteria() -> dict[str, str]:
     }
 
 
-def base_state(goal: str, screen: Screen, items: list[Item], history: list[str]) -> dict:
+def base_state(goal: str, screen: Screen, items: list[Item], history: list[str], note: str = "") -> dict:
     hints = date_hints(items, screen)
     return {
         "goal": goal,
+        **({"about_the_goal": note} if note else {}),
         "now": now_context(),
         "frontmost_app": screen.app,
         "browser_active_tab_url": screen.url,
@@ -109,12 +173,30 @@ def base_state(goal: str, screen: Screen, items: list[Item], history: list[str])
     }
 
 
+def validated(answer, offered: dict, question: str):
+    """The answer, if it names something that was offered; otherwise nothing.
+
+    A Choice should only ever return one of its own keys, but trusting that means a
+    surprise becomes a click on whatever happens to sit at that index. Checking is one
+    comparison, and it turns an impossible answer into an ordinary no-op.
+    """
+    if answer is None:
+        return None
+    choice = getattr(answer, "choice", None)
+    if choice in offered:
+        return answer
+    LOGGER.warning("%s answered %r, which was not offered", question, choice)
+    return None
+
+
 @dataclass(frozen=True)
 class Decision:
     kind: ChoiceAnswer
     item: ChoiceAnswer | None
     site: ChoiceAnswer
     offscreen: ChoiceAnswer | None = None
+    app: ChoiceAnswer | None = None
+    keys: ChoiceAnswer | None = None
 
     @property
     def clicking(self) -> bool:
@@ -150,7 +232,14 @@ class Decision:
 
 
 def decide(
-    client: TypeSafeClient, goal: str, screen: Screen, items: list[Item], history: list[str], browser: str, email: str | None
+    client: TypeSafeClient,
+    goal: str,
+    screen: Screen,
+    items: list[Item],
+    history: list[str],
+    browser: str,
+    email: str | None,
+    note: str = "",
 ) -> Decision:
     questions = {
         "kind": Choice(
@@ -167,7 +256,21 @@ def decide(
                 "list when the goal calls for that one, 'other' when the goal calls for a site the list "
                 "does not name, and 'none' to stay on the page that is already open in the browser."
             ),
-            criteria=site_criteria(),
+            criteria=site_criteria(sites.targets(browser)),
+        ),
+        "keys": Choice(
+            instructions=(
+                "If a keyboard shortcut is pressed this step, which one? Choose the shortcut that "
+                "does what the goal asks, and 'none' when no shortcut applies."
+            ),
+            criteria={**{name: why for name, (_spec, why) in macos.SHORTCUTS.items()}, "none": "No shortcut."},
+        ),
+        "app": Choice(
+            instructions=(
+                "If another application is opened this step, which one? Name the application the "
+                "goal refers to, and 'none' when the goal does not call for switching applications."
+            ),
+            criteria=app_criteria(macos.app_names()),
         ),
     }
     if items:
@@ -188,8 +291,24 @@ def decide(
             ),
             criteria=offscreen_criteria(screen.offscreen),
         )
-    answers = client.system_one(state=base_state(goal, screen, items, history), questions=questions).answers
-    return Decision(kind=answers["kind"], item=answers.get("item"), site=answers["site"], offscreen=answers.get("offscreen"))
+    answers = client.system_one(state=base_state(goal, screen, items, history, note), questions=questions).answers
+
+    # Every answer is checked against the options that were actually offered, so an
+    # answer naming something that does not exist becomes a no-op rather than a click
+    # on whatever happens to sit at that index.
+    kind = validated(answers.get("kind"), questions["kind"].criteria, "kind")
+    if kind is None:  # nothing else is safe to act on
+        kind = answers["kind"]
+    return Decision(
+        kind=kind,
+        item=validated(answers.get("item"), questions["item"].criteria if "item" in questions else {}, "item"),
+        site=answers["site"],
+        offscreen=validated(
+            answers.get("offscreen"), questions["offscreen"].criteria if "offscreen" in questions else {}, "offscreen"
+        ),
+        app=validated(answers.get("app"), questions["app"].criteria if "app" in questions else {}, "app"),
+        keys=validated(answers.get("keys"), questions["keys"].criteria if "keys" in questions else {}, "keys"),
+    )
 
 
 def verify_typed(client: TypeSafeClient, goal: str, field_before: Field, typed: str, field_after: Field | None) -> float:

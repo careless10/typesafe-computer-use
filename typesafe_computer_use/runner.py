@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import time
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import anthropic
 from typesafe_sdk import TypeSafeClient
 
-from . import macos
+from . import config as cfg_module
+from . import learning, macos
 from .actions import Context, is_noop, perform
 from .config import DEFAULT_DELAY, DEFAULT_MIN_CONFIDENCE, DEFAULT_STEPS, MAX_OPTIONS
 from .decide import Decision, decide, offscreen_records
@@ -44,6 +47,9 @@ class RunConfig:
     image: Path | None = None  # replay a saved capture (never acts)
     app: str | None = None  # frontmost app to report during replay
     url: str | None = None  # browser URL to report during replay
+    context: list[str] = field(default_factory=list)  # what happened before this run started
+    answer: bool = True  # the closing summary; a vision call worth several seconds
+    note: str = ""  # something true about the goal itself, e.g. that speech produced it
 
     @property
     def replay(self) -> bool:
@@ -62,8 +68,14 @@ class RunState:
     answer: Answer | None = None
 
 
-def run(cfg: RunConfig, ctx_factory) -> RunState:
-    """Drive the loop. ctx_factory(typesafe, history) builds the action Context."""
+def run(cfg: RunConfig, ctx_factory, client: TypeSafeClient | None = None, ocr_cache: OcrCache | None = None) -> RunState:
+    """Drive the loop. ctx_factory(typesafe, history) builds the action Context.
+
+    A caller that runs many goals in one process can pass its own client and OCR cache.
+    That keeps the TLS connection open — worth about 0.7s on the first decision of every
+    run — and carries the cached screen regions across commands, so the first step no
+    longer has to read the whole display.
+    """
     cfg.out.mkdir(parents=True, exist_ok=True)
     log = Log(cfg.out / "run.log")
     log(f"run folder: {cfg.out}")
@@ -71,9 +83,15 @@ def run(cfg: RunConfig, ctx_factory) -> RunState:
         log("driving the machine. abort: Ctrl-C, or slam the mouse into the top-left corner.")
 
     state = RunState()
+    if ocr_cache is not None:
+        state.ocr_cache = ocr_cache
+    # Each spoken command is its own process, so without this the model sees an empty
+    # history and cannot resolve a follow-up like "go to the main page".
+    state.history.extend(cfg.context)
     started = time.time()
     try:
-        with TypeSafeClient() as typesafe:
+        with contextlib.ExitStack() as stack:
+            typesafe = client if client is not None else stack.enter_context(TypeSafeClient())
             ctx = ctx_factory(typesafe, state.history)
             for step in range(1, cfg.steps + 1):
                 if not run_step(cfg, ctx, state, step, log):
@@ -86,6 +104,12 @@ def run(cfg: RunConfig, ctx_factory) -> RunState:
         state.outcome = f"aborted ({e or 'Ctrl-C'})"
         log(f"\n{state.outcome} after {len(state.history)} actions")
     finally:
+        # Learn only from runs that got somewhere: a wrong turn should not be
+        # remembered as if it were the right one.
+        if cfg.act and state.outcome == "done" and (state.answer is None or state.answer.achieved):
+            landed = macos.browser_url(cfg_module.browser())
+            if landed:
+                learning.remember(cfg.goal, landed, state.view[0].app if state.view else "")
         summary = {
             "goal": cfg.goal,
             "act": cfg.act,
@@ -111,6 +135,8 @@ def conclude(cfg: RunConfig, ctx: Context, state: RunState, log: Log) -> None:
     """
     stopped = STOPPED.get(state.outcome)
     if stopped is None:
+        return
+    if not cfg.answer:
         return
     if ctx.writer is None:
         log("\nno answer: the writer is disabled (set ANTHROPIC_API_KEY)")
@@ -146,7 +172,7 @@ def run_step(cfg: RunConfig, ctx: Context, state: RunState, step: int, log: Log)
     )
 
     with phase(timing, "decide"):
-        decision = decide(ctx.typesafe, cfg.goal, screen, items, state.history, ctx.browser, ctx.email)
+        decision = decide(ctx.typesafe, cfg.goal, screen, items, state.history, ctx.browser, ctx.email, cfg.note)
     by_index = {str(it.index): it for it in items}
     annotate(screen, items, decision.chosen, prefix.with_suffix(".png"))
 
@@ -207,6 +233,22 @@ def resolve(
 
     with phase(timing, "act"):
         what = perform(decision, screen, items, ctx)
+        # The questions are answered independently and in parallel, so they can
+        # disagree: "open an app" with no app named, "use the browser" with no site.
+        # That refusal is not a wrong judgement about the screen, it is an internally
+        # inconsistent plan, so try the next most likely action rather than burn a step.
+        if is_noop(what) and "refused: no" in what:
+            second = runner_up(decision)
+            if second:
+                log(f"  {what}; falling back to {second!r}")
+                # The answer objects come from the SDK and are not dataclasses, so the
+                # substitute kind is a plain stand-in carrying the same fields.
+                instead = SimpleNamespace(
+                    choice=second,
+                    confidence=decision.kind.confidence,
+                    probabilities=decision.kind.probabilities,
+                )
+                what = perform(replace(decision, kind=instead), screen, items, ctx)
     state.view = None
     repeated = bool(state.history) and state.history[-1] == what and screen.url == state.last_url
     state.last_url = screen.url
@@ -221,6 +263,22 @@ def resolve(
     else:
         state.consecutive_noops = 0
     return True
+
+
+def runner_up(decision: Decision) -> str:
+    """The next action the model would have taken.
+
+    No probability floor: this is only reached when the first choice turned out to be
+    impossible — an action whose parameter question named nothing — and in that case any
+    real alternative beats repeating something that cannot work. A confident wrong plan
+    leaves its alternatives with very little probability, which is exactly when a floor
+    would block the recovery.
+    """
+    ranked = sorted(decision.kind.probabilities.items(), key=lambda kv: kv[1], reverse=True)
+    for name, _probability in ranked[1:]:
+        if name not in ("none", "done", "wait", decision.kind.choice):
+            return name
+    return ""
 
 
 def answers(decision: Decision, screen: Screen, items: list[Item], timing: dict[str, float]) -> dict:

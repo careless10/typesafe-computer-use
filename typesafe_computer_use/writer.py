@@ -12,10 +12,11 @@ import anthropic
 from PIL import Image
 
 from .config import answer_model, writer_model
-from .subscription import SubscriptionWriter, available as claude_cli_available
 from .dates import now_context
 from .models import Item, Screen
 from .perception import near_field
+from .subscription import SubscriptionWriter
+from .subscription import available as claude_cli_available
 
 
 def make_writer() -> anthropic.Anthropic | SubscriptionWriter | None:

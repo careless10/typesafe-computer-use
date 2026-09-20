@@ -8,7 +8,7 @@ from dataclasses import dataclass
 import anthropic
 from typesafe_sdk import TypeSafeClient
 
-from . import macos
+from . import macos, notion, sites
 from .config import SITES
 from .decide import OFFSCREEN_PREFIX, Decision, verify_typed
 from .models import Field, Item, Screen
@@ -95,6 +95,56 @@ def fill_field(field: Field, text: str) -> str:
     return "via keystrokes"
 
 
+def _open_app(decision, screen, items, ctx: Context) -> str:
+    """Switch to the application the app question named, launching it if needed."""
+    name = decision.app.choice if decision.app else "none"
+    if name == "none":
+        return "open_app refused: no application was named"
+    if macos.open_app(name):
+        return f"opened {name}"
+    return f"open_app failed: {name} did not come to the front"
+
+
+def _press_keys(decision, screen, items, ctx: Context) -> str:
+    name = decision.keys.choice if decision.keys else "none"
+    if name == "none":
+        return "press_keys refused: no shortcut was named"
+    if macos.press_shortcut(name):
+        return f"pressed {name.replace('_', ' ')}"
+    return f"press_keys failed: no shortcut called {name!r}"
+
+
+def _quit_app(decision, screen, items, ctx: Context) -> str:
+    name = decision.app.choice if decision.app else "none"
+    if name == "none":
+        return "quit_app refused: no application was named"
+    if macos.quit_app(name):
+        return f"quit {name}"
+    return f"quit_app failed: {name} did not quit"
+
+
+def _hide_app(decision, screen, items, ctx: Context) -> str:
+    name = decision.app.choice if decision.app else "none"
+    if name == "none":
+        return "hide_app refused: no application was named"
+    if macos.hide_app(name):
+        return f"hid {name}"
+    return f"hide_app failed: {name} did not hide"
+
+
+def _open_ticket(decision, screen, items, ctx: Context) -> str:
+    number = notion.ticket_number(ctx.goal)
+    if not number:
+        return "open_ticket refused: the goal names no ticket number"
+    return notion.open_ticket(number, ctx.browser)
+
+
+def _close_tab(decision, screen, items, ctx: Context) -> str:
+    if macos.close_tab(ctx.browser):
+        return f"closed the active tab in {ctx.browser}"
+    return f"close_tab failed: {ctx.browser} refused"
+
+
 def _use_browser(decision: Decision, screen, items, ctx: Context) -> str:
     """Go to the browser, and open the website the site answer named.
 
@@ -107,14 +157,19 @@ def _use_browser(decision: Decision, screen, items, ctx: Context) -> str:
         if macos.activate(ctx.browser):
             return f"activated {ctx.browser}"
         return f"use_browser failed: {ctx.browser} did not come to the front"
-    url = SITES.get(site)
+    url = SITES.get(site) or (sites.targets(ctx.browser).get(site) or (None, None))[0]
     if url is None:
         if ctx.writer is None:
             return "use_browser refused: the site is outside the catalog and no writer is available to propose a URL"
         url = compose_url(ctx.writer, ctx.goal, ctx.history)
     if not url:
         return "use_browser refused: the writer proposed no usable URL for this goal"
+    # Prefer a tab that is already open: switching is faster than loading, and it
+    # actually puts the page on screen, which `open location` alone does not.
+    if macos.focus_tab(ctx.browser, macos.url_needle(url)):
+        return f"switched to the open tab for {url}"
     if macos.open_url(ctx.browser, url):
+        macos.focus_tab(ctx.browser, macos.url_needle(url))
         return f"opened {url}"
     return f"use_browser failed: opened {url} but {ctx.browser} did not come to the front"
 
@@ -161,6 +216,12 @@ def _scroll(lines: int, description: str):
 
 _HANDLERS = {
     "use_browser": _use_browser,
+    "open_app": _open_app,
+    "close_tab": _close_tab,
+    "open_ticket": _open_ticket,
+    "quit_app": _quit_app,
+    "press_keys": _press_keys,
+    "hide_app": _hide_app,
     "type_email": _type_email,
     "type_text": _type_text,
     "press_enter": _key("return", "pressed Return"),

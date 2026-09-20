@@ -6,6 +6,7 @@ A Linux adapter would provide the same functions over xdotool and AT-SPI.
 
 from __future__ import annotations
 
+import json
 import subprocess
 import tempfile
 import time
@@ -21,7 +22,45 @@ from PIL import Image
 from .config import ABORT_CORNER_PX
 from .models import Abort, AxNode, Field
 
-KEYCODES = {"return": 36, "tab": 48, "escape": 53, "a": 0, "delete": 51}
+KEYCODES = {
+    "return": 36,
+    "tab": 48,
+    "escape": 53,
+    "delete": 51,
+    "space": 49,
+    "left": 123,
+    "right": 124,
+    "down": 125,
+    "up": 126,
+    "a": 0,
+    "s": 1,
+    "d": 2,
+    "f": 3,
+    "h": 4,
+    "g": 5,
+    "z": 6,
+    "x": 7,
+    "c": 8,
+    "v": 9,
+    "b": 11,
+    "q": 12,
+    "w": 13,
+    "e": 14,
+    "r": 15,
+    "y": 16,
+    "t": 17,
+    "o": 31,
+    "u": 32,
+    "i": 34,
+    "p": 35,
+    "l": 37,
+    "j": 38,
+    "k": 40,
+    "n": 45,
+    "m": 46,
+    "[": 33,
+    "]": 30,
+}
 MIN_WINDOW_SIDE_PT = 50.0  # anything smaller is a palette or a shadow, not the window being worked in
 
 # ------------------------------------------------------------------ escape hatch
@@ -62,13 +101,55 @@ def click_at(point: tuple[float, float]) -> None:
         _post(Quartz.CGEventCreateMouseEvent(None, kind, point, Quartz.kCGMouseButtonLeft))
 
 
-def press(key: str, command: bool = False) -> None:
+def press(key: str, command: bool = False, shift: bool = False, option: bool = False, control: bool = False) -> None:
+    """One keystroke, with modifiers. A keystroke reaches things a click cannot: closing
+    a tab, quitting an app, focusing the address bar — no pixel to find, nothing to miss."""
     code = KEYCODES[key]
+    flags = 0
+    if command:
+        flags |= Quartz.kCGEventFlagMaskCommand
+    if shift:
+        flags |= Quartz.kCGEventFlagMaskShift
+    if option:
+        flags |= Quartz.kCGEventFlagMaskAlternate
+    if control:
+        flags |= Quartz.kCGEventFlagMaskControl
     for down in (True, False):
         event = Quartz.CGEventCreateKeyboardEvent(None, code, down)
-        if command:
-            Quartz.CGEventSetFlags(event, Quartz.kCGEventFlagMaskCommand)
+        if flags:
+            Quartz.CGEventSetFlags(event, flags)
         _post(event)
+
+
+# The combinations worth offering: each does something a click cannot, or does it more
+# reliably. Named the way someone would say them, since the name is what Jev chooses.
+SHORTCUTS: dict[str, tuple[dict, str]] = {
+    "close_window_or_tab": ({"key": "w", "command": True}, "Command-W: close the frontmost tab or window"),
+    "new_tab": ({"key": "t", "command": True}, "Command-T: open a new browser tab"),
+    "reopen_closed_tab": ({"key": "t", "command": True, "shift": True}, "Command-Shift-T: reopen the last closed tab"),
+    "address_bar": ({"key": "l", "command": True}, "Command-L: focus the browser's address bar"),
+    "reload": ({"key": "r", "command": True}, "Command-R: reload the page"),
+    "find_on_page": ({"key": "f", "command": True}, "Command-F: open find"),
+    "save": ({"key": "s", "command": True}, "Command-S: save"),
+    "quit_frontmost_app": ({"key": "q", "command": True}, "Command-Q: quit the app in front"),
+    "select_all": ({"key": "a", "command": True}, "Command-A: select everything in the focused field"),
+    "copy": ({"key": "c", "command": True}, "Command-C: copy the selection"),
+    "paste": ({"key": "v", "command": True}, "Command-V: paste"),
+    "back": ({"key": "[", "command": True}, "Command-[: go back"),
+    "forward": ({"key": "]", "command": True}, "Command-]: go forward"),
+    "next_tab": ({"key": "right", "command": True, "option": True}, "Control-Tab equivalent: the tab to the right"),
+    "previous_tab": ({"key": "left", "command": True, "option": True}, "the tab to the left"),
+    "clear_field": ({"key": "delete", "command": True}, "Command-Delete: clear the focused field"),
+    "notion_quick_find": ({"key": "p", "command": True}, "Command-P: Notion's quick find"),
+}
+
+
+def press_shortcut(name: str) -> bool:
+    spec = SHORTCUTS.get(name)
+    if spec is None:
+        return False
+    press(**spec[0])
+    return True
 
 
 def type_text(text: str) -> None:
@@ -133,6 +214,136 @@ def open_url(browser: str, url: str) -> bool:
     return activate(browser)
 
 
+MAX_APPS = 200  # well inside the Choice ceiling of 255
+# Applications you never want opened, one name per line or a JSON list. Some things
+# exist as both an app and a website, and the answer is personal: offering a desktop
+# app you never use is how "open notion" ends up launching the wrong Notion.
+IGNORE_APPS = Path.home() / ".config/jev/ignore-apps.json"
+
+
+def ignored_apps() -> set[str]:
+    try:
+        loaded = json.loads(IGNORE_APPS.read_text())
+    except (OSError, json.JSONDecodeError):
+        return set()
+    return {str(n).strip().lower() for n in loaded} if isinstance(loaded, list) else set()
+
+
+def app_names() -> list[str]:
+    """Apps this Mac can switch to: what is running, then what is installed.
+
+    Enumerated per run rather than configured, so installing an app is enough to make
+    it reachable. Running apps come first because switching to one is instant and is
+    usually what "open X" means when X is already open.
+    """
+    unwanted = ignored_apps()
+    names: list[str] = []
+    try:
+        running = osascript(
+            'tell application "System Events" to get name of every application process whose background only is false'
+        )
+        names.extend(n.strip() for n in running.split(",") if n.strip() and n.strip().lower() not in unwanted)
+    except subprocess.CalledProcessError:
+        pass
+    seen = {n.lower() for n in names}
+    for folder in ("/Applications", "/System/Applications", str(Path.home() / "Applications")):
+        try:
+            entries = sorted(p.stem for p in Path(folder).glob("*.app"))
+        except OSError:
+            continue
+        for name in entries:
+            if name.lower() not in seen and name.lower() not in unwanted:
+                seen.add(name.lower())
+                names.append(name)
+    return names[:MAX_APPS]
+
+
+def open_app(name: str) -> bool:
+    """Bring an app to the front, launching it if it is not running."""
+    try:
+        subprocess.run(["open", "-a", name], check=True, capture_output=True, timeout=10)
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        return False
+    return activate(name)
+
+
+def focus_tab(browser: str, needle: str) -> bool:
+    """Bring an already-open tab matching `needle` to the front, across all windows.
+
+    `open location` opens a tab but leaves it behind whatever is showing when the
+    page lands in another window, so the goal looks unachieved on screen even
+    though the site is loaded. Switching to the tab that already exists is also
+    faster than loading the page again.
+    """
+    script = f'''
+    tell application "{browser}"
+      repeat with w from 1 to (count of windows)
+        repeat with t from 1 to (count of tabs of window w)
+          if (URL of tab t of window w) contains "{needle}" then
+            set active tab index of window w to t
+            set index of window w to 1
+            activate
+            return "found"
+          end if
+        end repeat
+      end repeat
+      return "none"
+    end tell'''
+    from . import cdp
+
+    if cdp.available():
+        tab = cdp.matching(needle)
+        if tab and cdp.activate(tab.id):
+            activate(browser)  # devtools raises the tab; the window still needs the front
+            return True
+    try:
+        return osascript(script).strip() == "found"
+    except subprocess.CalledProcessError:
+        return False
+
+
+def quit_app(name: str) -> bool:
+    """Quit an application. The app's own save prompt still appears for unsaved work,
+    so this asks it to quit rather than killing it."""
+    try:
+        osascript(f'tell application "{name}" to quit')
+        return True
+    except subprocess.CalledProcessError:
+        return False
+
+
+def hide_app(name: str) -> bool:
+    """Put an application away without quitting it."""
+    try:
+        osascript(f'tell application "System Events" to set visible of process "{name}" to false')
+        return True
+    except subprocess.CalledProcessError:
+        return False
+
+
+def close_tab(browser: str) -> bool:
+    """Close the browser's active tab. Clicking the little x is unreliable: it is a
+    few pixels wide and the tab strip reflows as tabs close."""
+    from . import cdp
+
+    if cdp.available():
+        tab = cdp.active_tab()
+        if tab and cdp.close(tab.id):
+            return True
+    try:
+        osascript(f'tell application "{browser}" to close active tab of front window')
+        return True
+    except subprocess.CalledProcessError:
+        return False
+
+
+def url_needle(url: str) -> str:
+    """The distinctive part of a URL to match a tab on: the host without www or TLD."""
+    host = url.split("//", 1)[-1].split("/", 1)[0]
+    host = host[4:] if host.startswith("www.") else host
+    return host.rsplit(".", 1)[0] if "." in host else host
+
+
 def browser_url(browser: str) -> str | None:
     try:
         return osascript(f'tell application "{browser}" to get URL of active tab of front window') or None
@@ -167,14 +378,48 @@ def frontmost_window_center(pid: int | None = None) -> tuple[float, float] | Non
 # ------------------------------------------------------------------ capture and accessibility
 
 
-def screenshot() -> Image.Image:
+MAX_DISPLAYS = 16
+
+
+def active_displays() -> list[tuple[int, tuple[float, float, float, float]]]:
+    """Every attached display as (number for `screencapture -D`, bounds in points).
+
+    Bounds are in the global coordinate space shared by all displays, so a window on
+    a second monitor has coordinates outside the main display's rectangle.
+    """
+    err, ids, count = Quartz.CGGetActiveDisplayList(MAX_DISPLAYS, None, None)
+    if err != 0 or not count:
+        main = Quartz.CGDisplayBounds(Quartz.CGMainDisplayID())
+        return [(1, (main.origin.x, main.origin.y, main.size.width, main.size.height))]
+    displays = []
+    for number, display_id in enumerate(ids[:count], start=1):
+        b = Quartz.CGDisplayBounds(display_id)
+        displays.append((number, (b.origin.x, b.origin.y, b.size.width, b.size.height)))
+    return displays
+
+
+def display_holding(point: tuple[float, float] | None) -> tuple[int, tuple[float, float, float, float]]:
+    """The display a point falls on, or the main one when it falls on none."""
+    displays = active_displays()
+    if point is not None:
+        x, y = point
+        for number, (ox, oy, w, h) in displays:
+            if ox <= x < ox + w and oy <= y < oy + h:
+                return number, (ox, oy, w, h)
+    return displays[0]
+
+
+def screenshot(display: int = 1) -> Image.Image:
+    """One display, by its `screencapture` number. Capturing only the display the work
+    is happening on keeps OCR cheap, but it means the caller must offset coordinates by
+    that display's origin to get back to the global space everything else speaks."""
     path = Path(tempfile.mkdtemp()) / "screen.png"
-    subprocess.run(["screencapture", "-x", "-D", "1", str(path)], check=True, capture_output=True)
+    subprocess.run(["screencapture", "-x", "-D", str(display), str(path)], check=True, capture_output=True)
     return Image.open(path).convert("RGB")
 
 
-def display_scale(image: Image.Image) -> float:
-    points_wide = Quartz.CGDisplayBounds(Quartz.CGMainDisplayID()).size.width
+def display_scale(image: Image.Image, bounds: tuple[float, float, float, float] | None = None) -> float:
+    points_wide = bounds[2] if bounds else Quartz.CGDisplayBounds(Quartz.CGMainDisplayID()).size.width
     return image.width / points_wide
 
 

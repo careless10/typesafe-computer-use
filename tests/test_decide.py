@@ -86,10 +86,61 @@ def test_kind_criteria_offers_email_only_when_set():
 def test_item_criteria_and_state_carry_region_and_dates(screen, make_item):
     items = [make_item(0, "Sale ends Oct 1, 2099", y1=100, y2=130), make_item(1, "Buy", y1=140, y2=170)]
     crit = item_criteria(screen, items)
-    assert crit["0"].startswith("'Sale ends Oct 1, 2099' (top-left; dated 2099-10-01")
-    assert "near a line dated 2099-10-01" in crit["1"]
+    # Options are objects, not sentences: the fields are what the Choice matches on.
+    assert crit["0"]["element"] == "Sale ends Oct 1, 2099"
+    assert crit["0"]["where"] == "top-left"
+    assert crit["0"]["when"].startswith("dated 2099-10-01")
+    assert "near a line dated 2099-10-01" in crit["1"]["when"]
+    assert crit["1"]["declared_by_app"] is False
     state = base_state("buy the thing", screen, items, ["opened https://example.com/"])
     assert state["goal"] == "buy the thing"
     assert state["previous_actions"] == ["opened https://example.com/"]
     assert state["screen_items_in_reading_order"][1]["when"].startswith("near a line dated")
     assert "today" in state["now"]
+
+
+def test_a_focused_field_says_what_it_already_holds(screen, make_item):
+    """Without this the model cannot tell a field that already has the value from an
+    empty one, and happily retypes what is there."""
+    from typesafe_computer_use.models import Field
+
+    field = Field(
+        role="AXTextField",
+        label="Search",
+        placeholder="",
+        value="youtube.com",
+        x=10,
+        y=20,
+        w=200,
+        h=30,
+        ref=None,
+    )
+    live = replace(screen, field=field)
+    crit = item_criteria(live, [make_item(0, "Search"), make_item(1, "Buy")])
+    assert crit["0"]["focused"] is True
+    assert crit["0"]["current_value"] == "youtube.com"
+    assert "focused" not in crit["1"]
+
+
+def test_an_answer_that_was_never_offered_is_discarded():
+    """A Choice should only return its own keys. Trusting that turns a surprise into a
+    click on whatever sits at that index; checking turns it into a harmless no-op."""
+    from typesafe_computer_use.decide import validated
+
+    offered = {"0": "Sign in", "1": "Register"}
+    assert validated(answer("1", 0.9), offered, "item") is not None
+    assert validated(answer("47", 0.9), offered, "item") is None
+    assert validated(None, offered, "item") is None
+
+
+def test_an_action_whose_parameter_is_missing_is_still_reported_honestly():
+    """kind and app are independent, so "open an app" can arrive with no app named.
+    The decision keeps the kind — the runner is what recovers — but the app is None."""
+    d = Decision(
+        kind=answer("open_app", 0.95),
+        item=None,
+        site=answer("app.notion.com", 0.9),
+        app=None,
+    )
+    assert d.chosen == "open_app"
+    assert d.app is None

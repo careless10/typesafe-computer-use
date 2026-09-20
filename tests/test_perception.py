@@ -117,3 +117,55 @@ def test_budget_falls_back_to_dropping_controls_when_only_controls_remain():
 def test_order_items_renumbers_rows_then_columns():
     items = [ocr_item(7, "right", 800, 100, 900, 130), ocr_item(2, "left", 100, 105, 200, 135)]
     assert [(it.index, it.text) for it in order_items(items)] == [(0, "left"), (1, "right")]
+
+
+# ---------------------------------------------------------------- multiple displays
+
+
+def test_a_click_on_a_second_display_lands_in_the_global_space(screen):
+    """Item coordinates are pixels inside the captured display, so the display's
+    origin has to be added back; without it the click lands on the main monitor at
+    the same offset."""
+    from dataclasses import replace
+
+    from typesafe_computer_use.models import Item
+
+    item = Item(0, "Open", 1.0, 100.0, 200.0, 300.0, 240.0)  # centre (200, 220) px
+    on_main = replace(screen, scale=2.0, origin=(0.0, 0.0))
+    assert on_main.to_points(item) == (100.0, 110.0)
+
+    # The 2560x1440 display to the right of a 1920-wide main display.
+    on_second = replace(screen, scale=2.0, origin=(1920.0, 0.0))
+    assert on_second.to_points(item) == (2020.0, 110.0)
+
+
+def test_the_read_region_is_measured_from_the_captured_display(screen):
+    """Window bounds are global. On a second display they exceed the image, and
+    before the origin was subtracted the crop collapsed and the whole main display
+    was read instead."""
+    from dataclasses import replace
+
+    from typesafe_computer_use.perception import ocr_region
+
+    # A window at global x=2000 on a display whose origin is x=1920 is 80pt in.
+    on_second = replace(screen, scale=1.0, origin=(1920.0, 0.0), window=(2000.0, 100.0, 400.0, 300.0))
+    left, _top, right, _bottom = ocr_region(on_second)
+    assert left < 80.0 + 1.0  # near the window's left edge, less the margin
+    assert right > 400.0  # and wide enough to hold it
+    assert right <= on_second.image.width
+
+
+def test_display_holding_picks_the_display_a_point_falls_on(monkeypatch):
+    from typesafe_computer_use import macos
+
+    layout = [
+        (1, (0.0, 0.0, 1920.0, 1080.0)),
+        (2, (1920.0, 0.0, 2560.0, 1440.0)),
+        (3, (2560.0, -1080.0, 1920.0, 1080.0)),
+    ]
+    monkeypatch.setattr(macos, "active_displays", lambda: layout)
+    assert macos.display_holding((100.0, 100.0))[0] == 1
+    assert macos.display_holding((3000.0, 500.0))[0] == 2
+    assert macos.display_holding((3000.0, -500.0))[0] == 3
+    assert macos.display_holding(None)[0] == 1  # no window: the main display
+    assert macos.display_holding((99999.0, 0.0))[0] == 1  # off every display: fall back

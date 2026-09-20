@@ -42,10 +42,23 @@ class _Session:
 
     def start(self) -> None:
         self.proc = subprocess.Popen(
-            ["claude", "-p", "--input-format", "stream-json", "--output-format", "stream-json",
-             "--verbose", "--model", self.model, *BARE],
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-            text=True, bufsize=1,
+            [
+                "claude",
+                "-p",
+                "--input-format",
+                "stream-json",
+                "--output-format",
+                "stream-json",
+                "--verbose",
+                "--model",
+                self.model,
+                *BARE,
+            ],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            bufsize=1,
         )
         self.turns = 0
 
@@ -91,8 +104,7 @@ class SubscriptionWriter:
 
     sessions: dict[str, _Session] = field(default_factory=dict)
 
-    def structured(self, system: str, packet: dict, properties: dict, model: str,
-                   image: Image.Image | None = None) -> dict:
+    def structured(self, system: str, packet: dict, properties: dict, model: str, image: Image.Image | None = None) -> dict:
         alias = _alias(model)
         session = self.sessions.setdefault(alias, _Session(alias))
 
@@ -120,8 +132,10 @@ def _image_block(image: Image.Image) -> dict:
     shrunk.thumbnail((1568, 1568))
     buffer = io.BytesIO()
     shrunk.save(buffer, format="PNG")
-    return {"type": "image", "source": {"type": "base64", "media_type": "image/png",
-                                        "data": base64.b64encode(buffer.getvalue()).decode()}}
+    return {
+        "type": "image",
+        "source": {"type": "base64", "media_type": "image/png", "data": base64.b64encode(buffer.getvalue()).decode()},
+    }
 
 
 def _parse(reply: str, properties: dict) -> dict:

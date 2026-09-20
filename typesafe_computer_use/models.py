@@ -130,6 +130,7 @@ class Screen:
     url: str | None
     pid: int | None = None  # frontmost process, for the accessibility walk; None in replay
     window: tuple[float, float, float, float] | None = None  # frontmost window, x/y/w/h in points; None in replay
+    origin: tuple[float, float] = (0.0, 0.0)  # captured display's top-left in the global space
     ax_refs: dict[int, object] = field(default_factory=dict)  # item index -> accessibility element, when it has one
     offscreen: list[AxNode] = field(default_factory=list)  # labelled controls the app exposes but does not show
 
@@ -144,5 +145,12 @@ class Screen:
         return f"{row}-{col}"
 
     def to_points(self, item: Item) -> tuple[float, float]:
+        """Where to click, in the global space the window server uses.
+
+        Item coordinates are pixels within the captured display, so the display's own
+        origin has to be added back or a click meant for a second monitor lands on the
+        first one at the same offset.
+        """
         cx, cy = item.center
-        return cx / self.scale, cy / self.scale
+        ox, oy = self.origin
+        return cx / self.scale + ox, cy / self.scale + oy

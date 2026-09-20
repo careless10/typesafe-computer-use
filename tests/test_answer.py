@@ -178,3 +178,17 @@ def test_an_action_makes_the_last_capture_stale(tmp_path, screen, monkeypatch):
 
     assert keep_going
     assert state.view is None
+
+
+def test_the_closing_summary_can_be_skipped(monkeypatch, tmp_path):
+    """It is one vision call worth several seconds, and navigation never uses it, so a
+    voice loop that wants the next command promptly can turn it off."""
+    from typesafe_computer_use import runner as runner_module
+
+    called = []
+    monkeypatch.setattr(runner_module, "compose_answer", lambda *a, **k: called.append(a))
+    cfg = runner_module.RunConfig(goal="open notion", out=tmp_path, answer=False)
+    state = runner_module.RunState()
+    state.outcome = "done"
+    runner_module.conclude(cfg, object(), state, lambda *_: None)
+    assert called == []

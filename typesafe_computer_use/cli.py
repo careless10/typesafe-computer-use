@@ -40,6 +40,25 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--image", type=Path, help="replay a saved capture instead of the live screen (never acts)")
     parser.add_argument("--app", help="frontmost app to report during replay")
     parser.add_argument("--url", help="browser URL to report during replay")
+    parser.add_argument(
+        "--no-answer",
+        action="store_true",
+        help="skip the closing summary. It is one vision call to a big model, worth several "
+        "seconds, and it only describes what happened: navigation does not use it",
+    )
+    parser.add_argument(
+        "--note",
+        default="",
+        help="something true about the goal itself, sent with it: that speech produced it and "
+        "which names the recogniser tends to mangle, for instance",
+    )
+    parser.add_argument(
+        "--context",
+        action="append",
+        default=[],
+        help="something that happened before this run; repeatable, so a follow-up command "
+        "like 'go to the main page' knows what came before",
+    )
     args = parser.parse_args(argv)
 
     _prepare()
@@ -59,6 +78,9 @@ def main(argv: list[str] | None = None) -> None:
         image=args.image,
         app=args.app,
         url=args.url,
+        context=args.context,
+        answer=not args.no_answer,
+        note=args.note,
     )
 
     def ctx_factory(typesafe, history):

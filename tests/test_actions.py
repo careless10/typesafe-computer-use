@@ -440,21 +440,39 @@ def test_typing_into_an_ordinary_field_still_works(screen, monkeypatch):
     assert "alan turing" in result
 
 
-def test_open_ticket_reports_when_the_browser_drifted_elsewhere(monkeypatch):
-    """A run opened RUB-625 and then said "done" while looking at an unrelated tab,
-    because with several windows the next read can land on a different one."""
-    from typesafe_computer_use import macos, notion
+def test_open_ticket_follows_the_row_link_when_the_table_has_it(monkeypatch):
+    """The tracker holds a link to every ticket, so reading it beats driving a search
+    dialog with keystrokes, which depends on focus and timing."""
+    from typesafe_computer_use import dom, macos, notion
 
+    opened = []
     monkeypatch.setattr(macos, "activate", lambda app: True)
-    monkeypatch.setattr(macos, "focus_tab", lambda app, needle: True)
-    monkeypatch.setattr(macos, "press", lambda *a, **k: None)
-    monkeypatch.setattr(macos, "type_text", lambda text: None)
+    monkeypatch.setattr(macos, "open_url", lambda app, url: opened.append(url) or True)
+    monkeypatch.setattr(notion, "tracker_url", lambda: "https://app.notion.com/p/findruba/tracker")
+    monkeypatch.setattr(dom, "ticket_link", lambda n, b: "https://app.notion.com/p/findruba/RUB-625-x")
+    monkeypatch.setattr(macos, "browser_url", lambda app: "https://app.notion.com/p/findruba/RUB-625-x")
     monkeypatch.setattr(notion.time, "sleep", lambda s: None)
 
-    monkeypatch.setattr(macos, "browser_url", lambda app: "https://app.notion.com/p/abc")
-    assert notion.open_ticket("RUB-625", "Google Chrome") == "opened RUB-625 through Notion quick find"
+    assert notion.open_ticket("RUB-625", "Google Chrome") == "opened RUB-625"
+    assert opened[-1].endswith("RUB-625-x")
 
+
+def test_open_ticket_says_so_when_it_lands_somewhere_else(monkeypatch):
+    """A run opened RUB-625 and then reported the goal done while looking at an
+    unrelated tab. Requiring the number in the url is what makes that a failure."""
+    from typesafe_computer_use import dom, macos, notion
+
+    monkeypatch.setattr(macos, "activate", lambda app: True)
+    monkeypatch.setattr(macos, "open_url", lambda app, url: True)
+    monkeypatch.setattr(macos, "press", lambda *a, **k: None)
+    monkeypatch.setattr(macos, "type_text", lambda text: None)
+    monkeypatch.setattr(notion, "tracker_url", lambda: "")
+    monkeypatch.setattr(dom, "ticket_link", lambda n, b: "")
+    monkeypatch.setattr(dom, "focus_page", lambda b: True)
+    monkeypatch.setattr(macos, "focus_tab", lambda app, needle: True)
     monkeypatch.setattr(macos, "browser_url", lambda app: "http://localhost:3400/map")
+    monkeypatch.setattr(notion.time, "sleep", lambda s: None)
+
     drifted = notion.open_ticket("RUB-625", "Google Chrome")
     assert "localhost:3400" in drifted and "RUB-625" in drifted
 

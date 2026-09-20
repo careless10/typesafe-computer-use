@@ -24,3 +24,18 @@ def make_item():
 def tmp_env(tmp_path: Path, monkeypatch):
     monkeypatch.delenv("CLICKER_TEST_KEY", raising=False)
     return tmp_path
+
+
+@pytest.fixture(autouse=True)
+def _no_browser(monkeypatch):
+    """Keep the suite away from the real browser.
+
+    Several paths now prefer the DevTools connection, and left alone the tests would
+    open a socket to whatever Chrome happens to be running — slow, and dependent on the
+    machine rather than the code. Everything falls back when it is unavailable, and the
+    fallback is what the tests exercise.
+    """
+    from typesafe_computer_use import chrome
+
+    monkeypatch.setattr(chrome, "available", lambda: False)
+    monkeypatch.setattr(chrome.SHARED, "connect", lambda: False)

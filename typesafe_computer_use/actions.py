@@ -8,7 +8,7 @@ from dataclasses import dataclass
 import anthropic
 from typesafe_sdk import TypeSafeClient
 
-from . import macos, notion, sites
+from . import dom, macos, notion, sites
 from .config import SITES
 from .decide import OFFSCREEN_PREFIX, Decision, verify_typed
 from .models import Field, Item, Screen
@@ -46,12 +46,25 @@ def perform(decision: Decision, screen: Screen, items: list[Item], ctx: Context)
     return handler(decision, screen, items, ctx)
 
 
+def ctx_browser() -> str:
+    from .config import browser
+
+    return browser()
+
+
 def click_item(item: Item, screen: Screen) -> str:
     """Press an item the app declared through the accessibility tree; click the pixel under it otherwise.
 
     A press goes to the control itself, so it lands even when the center of the box is covered by
     a sticky header, a cookie banner, or a tooltip. An element that refuses still has a location.
     """
+    if item.source == "dom":
+        # Through the document, not at a pixel: a control under a sticky header, or one
+        # that shifted since it was read, still receives the click.
+        what = dom.click(item.index, ctx_browser())
+        if what:
+            return what
+        return f"click_item refused: {item.text!r} is no longer on the page"
     ref = screen.ax_refs.get(item.index)
     if ref is not None and macos.ax_press(ref):
         return f"pressed {item.text!r} via accessibility"

@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import math
+import os
 from dataclasses import replace
 from pathlib import Path
 
 from ocrmac import ocrmac
 from PIL import Image, ImageChops, ImageStat
 
-from . import macos
+from . import dom, macos
 from .config import MAX_OPTIONS, MIN_OCR_CONFIDENCE
 from .models import AxNode, Box, Item, Screen
 from .timing import OCR_RECTS, OCR_REGION_PCT, phase
@@ -89,6 +90,40 @@ def is_echo(text: str, echoes: set[str]) -> bool:
     return any(e in norm for e in echoes)
 
 
+def from_dom(screen: Screen, browser: str) -> list[Item] | None:
+    """The page's own elements as items, when the browser will hand them over.
+
+    Reading the document instead of a picture of it costs no OCR, names controls
+    exactly, and is about a tenth the tokens. Coordinates are viewport-relative and are
+    kept only so the region hints still work; the click goes through the document by
+    index, not to a pixel.
+    """
+    if not os.environ.get("JEV_DOM"):
+        return None
+    if (screen.app or "").lower() not in browser.lower():
+        return None
+    page = dom.read(browser)
+    if not page:
+        return None
+    items = []
+    for element in page["elements"]:
+        x, y = float(element.get("x", 0)), float(element.get("y", 0))
+        items.append(
+            Item(
+                index=int(element["i"]),
+                text=str(element.get("label", "")),
+                ocr_confidence=1.0,
+                x1=x - 20,
+                y1=y - 8,
+                x2=x + 20,
+                y2=y + 8,
+                role=str(element.get("role", "")),
+                source="dom",
+            )
+        )
+    return items or None
+
+
 def perceive(
     screen: Screen,
     budget: int,
@@ -97,6 +132,9 @@ def perceive(
     cache: OcrCache | None = None,
 ) -> list[Item]:
     """Everything worth clicking on this screen: OCR text blocks, plus the app's own controls.
+
+    On a browser page whose document can be read, that is used instead: exact labels and
+    a tenth the tokens, with no OCR at all.
 
     Fills `screen.ax_refs` on the way, so an item that came from the accessibility tree can be
     pressed through it later. The merge renumbers everything, hence the side table over the
@@ -108,6 +146,12 @@ def perceive(
     A `cache` carries the previous capture's OCR, so only the tiles that changed are read again.
     Pass None to read the whole region every time, which is what a replay and an inspection do.
     """
+    from .config import browser as _browser
+
+    page_items = from_dom(screen, _browser())
+    if page_items is not None:
+        return page_items[:budget]
+
     with phase(timing, "ocr"):
         blocks = ocr(screen, budget, goal, cache, timing)
     with phase(timing, "ax"):

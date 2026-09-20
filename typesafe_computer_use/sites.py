@@ -96,10 +96,11 @@ def open_tabs(browser: str) -> list[tuple[str, str, str]]:
 
     DevTools sees every window unambiguously; AppleScript is the fallback.
     """
-    from . import cdp
+    from . import chrome
 
-    if cdp.available():
-        found = [(host_of(t.url), t.title[:60], t.url) for t in cdp.tabs() if host_of(t.url)]
+    # Every window's tabs, not just the one AppleScript calls the front one.
+    if chrome.available():
+        found = [(host_of(t["url"]), t["title"][:60], t["url"]) for t in chrome.SHARED.tabs() if host_of(t["url"])]
         if found:
             return found[:FROM_TABS]
     script = f'''

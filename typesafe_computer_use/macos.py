@@ -289,12 +289,15 @@ def focus_tab(browser: str, needle: str) -> bool:
       end repeat
       return "none"
     end tell'''
-    from . import cdp
+    from . import chrome
 
-    if cdp.available():
-        tab = cdp.matching(needle)
-        if tab and cdp.activate(tab.id):
-            activate(browser)  # devtools raises the tab; the window still needs the front
+    # By id, through the protocol: "the front window" is ambiguous once Chrome has
+    # windows on more than one display, which is how a page could be opened and then
+    # not found, and opened again.
+    if chrome.available():
+        tab = chrome.SHARED.matching(needle)
+        if tab and chrome.SHARED.activate(tab["id"]):
+            activate(browser)  # the tab is raised; the application still needs the front
             return True
     try:
         return osascript(script).strip() == "found"
@@ -324,11 +327,11 @@ def hide_app(name: str) -> bool:
 def close_tab(browser: str) -> bool:
     """Close the browser's active tab. Clicking the little x is unreliable: it is a
     few pixels wide and the tab strip reflows as tabs close."""
-    from . import cdp
+    from . import chrome
 
-    if cdp.available():
-        tab = cdp.active_tab()
-        if tab and cdp.close(tab.id):
+    if chrome.available():
+        tab = chrome.SHARED.active_tab()
+        if tab and chrome.SHARED.close_tab(tab["id"]):
             return True
     try:
         osascript(f'tell application "{browser}" to close active tab of front window')

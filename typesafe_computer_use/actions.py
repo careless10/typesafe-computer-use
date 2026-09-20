@@ -12,6 +12,7 @@ from . import macos
 from .config import SITES
 from .decide import OFFSCREEN_PREFIX, Decision, verify_typed
 from .models import Field, Item, Screen
+from .subscription import SubscriptionWriter
 from .writer import compose_text, compose_url
 
 VERIFY_THRESHOLD = 0.5
@@ -24,7 +25,7 @@ class Context:
     browser: str
     email: str | None
     typesafe: TypeSafeClient
-    writer: anthropic.Anthropic | None
+    writer: anthropic.Anthropic | SubscriptionWriter | None
     history: list[str]
 
 

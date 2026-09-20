@@ -12,16 +12,24 @@ import anthropic
 from PIL import Image
 
 from .config import answer_model, writer_model
+from .subscription import SubscriptionWriter, available as claude_cli_available
 from .dates import now_context
 from .models import Item, Screen
 from .perception import near_field
 
 
-def make_writer() -> anthropic.Anthropic | None:
-    """A client, or None when no Anthropic credentials resolve (the SDK only checks on first request)."""
+def make_writer() -> anthropic.Anthropic | SubscriptionWriter | None:
+    """An API client when a key resolves, else the Claude Code CLI, else nothing.
+
+    The SDK only validates credentials on first request, so we check the fields.
+    The CLI route uses the user's Claude Code subscription instead of an API key:
+    slower to start, free, and near API speed once its session is warm.
+    """
     client = anthropic.Anthropic()
     if client.api_key or getattr(client, "auth_token", None):
         return client
+    if claude_cli_available():
+        return SubscriptionWriter()
     return None
 
 
@@ -29,7 +37,7 @@ ANSWER_IMAGE_EDGE = 1568  # the longest edge a vision model reads without shrink
 
 
 def _structured(
-    writer: anthropic.Anthropic,
+    writer: anthropic.Anthropic | SubscriptionWriter,
     system: str,
     packet: dict,
     properties: dict,
@@ -37,6 +45,8 @@ def _structured(
     model: str | None = None,
     image: Image.Image | None = None,
 ) -> dict:
+    if isinstance(writer, SubscriptionWriter):
+        return writer.structured(system, packet, properties, model or writer_model(), image)
     content: list[dict] = [{"type": "text", "text": json.dumps(packet)}]
     if image is not None:
         content.insert(0, _image_block(image))

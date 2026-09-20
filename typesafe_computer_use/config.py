@@ -25,6 +25,22 @@ SITES: dict[str, str] = {
     "notion": "https://www.notion.so/",
     "slack": "https://app.slack.com/",
     "typesafe_console": "https://console.typesafe.ai/",
+    # added locally: the writer proposes URLs for anything not listed, and the
+    # writer needs an Anthropic key, so common destinations are cheaper here.
+    "chatgpt": "https://chatgpt.com/",
+    "claude": "https://claude.ai/",
+    "google": "https://www.google.com/",
+    "google_docs": "https://docs.google.com/",
+    "google_drive": "https://drive.google.com/",
+    "google_maps": "https://maps.google.com/",
+    "instagram": "https://www.instagram.com/",
+    "linkedin": "https://www.linkedin.com/",
+    "netflix": "https://www.netflix.com/",
+    "reddit": "https://www.reddit.com/",
+    "spotify": "https://open.spotify.com/",
+    "whatsapp": "https://web.whatsapp.com/",
+    "x_twitter": "https://x.com/",
+    "youtube": "https://www.youtube.com/",
 }
 
 

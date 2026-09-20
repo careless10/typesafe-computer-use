@@ -23,6 +23,7 @@ from . import macos
 TICKET = re.compile(r"\b(?:rub[\s-]*)?(?:ticket\s*(?:number\s*)?)?(?:rub[\s-]*)?(\d{2,5})\b", re.I)
 PREFIX = "RUB-"
 SETTLE = 0.6  # quick find needs a moment to rank before Return picks the top hit
+LOAD = 0.8  # and a moment more for the page it opens to become the one on screen
 
 
 def ticket_number(goal: str) -> str:
@@ -45,4 +46,14 @@ def open_ticket(number: str, browser: str) -> str:
     macos.type_text(number)
     time.sleep(SETTLE)
     macos.press("return")
+
+    # Quick find navigates the tab it was opened from, but with several browser windows
+    # the one the tool reads next may be a different one — a run opened RUB-625 and then
+    # reported success while looking at an unrelated tab. Raise the ticket's own window
+    # again, and say plainly where it ended up.
+    time.sleep(LOAD)
+    macos.focus_tab(browser, "notion")
+    landed = macos.browser_url(browser) or ""
+    if "notion" not in landed.lower():
+        return f"opened {number}, but {browser} is now showing {landed or 'another page'}"
     return f"opened {number} through Notion quick find"

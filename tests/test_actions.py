@@ -438,3 +438,22 @@ def test_typing_into_an_ordinary_field_still_works(screen, monkeypatch):
     live = dc_replace(screen, field=field, app="Google Chrome")
     result = actions.perform(SimpleNamespace(chosen="type_text"), live, [], context(writer=object()))
     assert "alan turing" in result
+
+
+def test_open_ticket_reports_when_the_browser_drifted_elsewhere(monkeypatch):
+    """A run opened RUB-625 and then said "done" while looking at an unrelated tab,
+    because with several windows the next read can land on a different one."""
+    from typesafe_computer_use import macos, notion
+
+    monkeypatch.setattr(macos, "activate", lambda app: True)
+    monkeypatch.setattr(macos, "focus_tab", lambda app, needle: True)
+    monkeypatch.setattr(macos, "press", lambda *a, **k: None)
+    monkeypatch.setattr(macos, "type_text", lambda text: None)
+    monkeypatch.setattr(notion.time, "sleep", lambda s: None)
+
+    monkeypatch.setattr(macos, "browser_url", lambda app: "https://app.notion.com/p/abc")
+    assert notion.open_ticket("RUB-625", "Google Chrome") == "opened RUB-625 through Notion quick find"
+
+    monkeypatch.setattr(macos, "browser_url", lambda app: "http://localhost:3400/map")
+    drifted = notion.open_ticket("RUB-625", "Google Chrome")
+    assert "localhost:3400" in drifted and "RUB-625" in drifted

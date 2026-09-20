@@ -457,3 +457,22 @@ def test_open_ticket_reports_when_the_browser_drifted_elsewhere(monkeypatch):
     monkeypatch.setattr(macos, "browser_url", lambda app: "http://localhost:3400/map")
     drifted = notion.open_ticket("RUB-625", "Google Chrome")
     assert "localhost:3400" in drifted and "RUB-625" in drifted
+
+
+def test_being_told_it_was_wrong_unlearns_the_phrase(monkeypatch, tmp_path):
+    """Only successes were recorded, so a run that looked successful but was not
+    stayed learned. The person watching is the one who knows."""
+    from typesafe_computer_use import learning
+
+    monkeypatch.setattr(learning, "LEARNED", tmp_path / "learned.json")
+    monkeypatch.setattr(learning, "CORRECTIONS", tmp_path / "corrections.json")
+
+    learning.remember("open the widget page", "https://example.com/widgets", "Widgets")
+    learning.remember("open youtube", "https://www.youtube.com/", "YouTube")
+    assert "example.com/widgets" in learning.load()
+
+    dropped = learning.mistaken("open the widget page", did="opened example.com/widgets")
+    assert dropped == ["example.com/widgets"]
+    assert "example.com/widgets" not in learning.load()
+    assert "youtube.com" in learning.load()  # untouched
+    assert "was wrong" in learning.recent_mistakes()[0]

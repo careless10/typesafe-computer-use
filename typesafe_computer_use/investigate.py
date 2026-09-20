@@ -29,14 +29,20 @@ class Verdict:
     why: str  # one sentence, for the log and for the person
 
 
-def diagnose(writer, goal: str, did: str, screen: Screen, items: list[Item], browser: str) -> Verdict:
-    """What should have happened, according to a model that can see the screen."""
+def diagnose(writer, goal: str, did: str, screen: Screen, items: list[Item], browser: str, expected: str = "") -> Verdict:
+    """What should have happened, according to a model that can see the screen.
+
+    `expected` is what the person said they wanted when they asked for the investigation.
+    It is the one thing neither model can infer from a screenshot, so it outranks
+    everything else here when the two disagree.
+    """
     if writer is None:
         return Verdict("", "", "no writer is available to investigate with")
 
     options = sites.targets(browser)
     packet = {
         "what_was_asked": goal,
+        **({"what_the_user_expected": expected} if expected else {}),
         "what_it_did": did or "nothing",
         "frontmost_app": screen.app,
         "browser_url": screen.url,
@@ -59,7 +65,9 @@ def diagnose(writer, goal: str, did: str, screen: Screen, items: list[Item], bro
                 "screen, and the very options it had to choose from, say which action and target "
                 "would have been right. Name a target exactly as it appears in the lists. If the "
                 "right move is not among the options, set action to an empty string and explain "
-                "what is missing in one sentence — that is a useful answer too."
+                "what is missing in one sentence — that is a useful answer too. When the user has "
+                "said what they expected, that is the authority on what right means here, over "
+                "anything the screen suggests."
             ),
             packet=packet,
             properties={
@@ -98,8 +106,8 @@ def teach(goal: str, verdict: Verdict, browser: str) -> str:
     return ""
 
 
-def investigate(writer, goal: str, did: str, screen: Screen, items: list[Item]) -> tuple[Verdict, str]:
+def investigate(writer, goal: str, did: str, screen: Screen, items: list[Item], expected: str = "") -> tuple[Verdict, str]:
     """Diagnose, then remember. The caller decides whether to carry the verdict out."""
     browser = config.browser()
-    verdict = diagnose(writer, goal, did, screen, items, browser)
+    verdict = diagnose(writer, goal, did, screen, items, browser, expected)
     return verdict, teach(goal, verdict, browser)

@@ -117,12 +117,12 @@ def _investigate(request: dict, writer, client) -> dict:
     from .perception import capture, perceive
     from .runner import perform
 
-    goal = str(request.get("goal", "")).strip()
+    goal = str(request.get("goal", "")).strip() or str(request.get("expected", "")).strip()
     did = str(request.get("did", ""))
     browser = config.browser()
     screen = capture(browser=browser)
     items = perceive(screen, config.MAX_OPTIONS, goal, {})
-    verdict, learned = investigation.investigate(writer, goal, did, screen, items)
+    verdict, learned = investigation.investigate(writer, goal, did, screen, items, expected=str(request.get("expected", "")))
 
     result = {"action": verdict.action, "target": verdict.target, "why": verdict.why, "learned": learned}
     if not (verdict.action and request.get("act")):
